@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>通勤ハザードマップ　TBS</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
+
+<style>
+  :root { --icon-size: 54px; } /* 地図上・アイコン欄の基準サイズ */
+  html, body { margin:0; padding:0; height:100%; font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif; }
+
+  /* 上部バー */
+  #topbar { display:flex; align-items:center; gap:12px; padding:8px; background:#f9f9f9; border-bottom:1px solid #eee; flex-wrap:wrap; justify-content:space-between; }
+  #leftButtons { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  button { padding:8px 14px; font-size:16px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  #addMarkerBtn.active,#addRouteBtn.active { background:#28a745; color:#fff; }
+  #resetBtn { background:#dc3545; color:#fff; }
+
+  /* アイコン選択（説明テキスト付き） */
+  #iconGroup { display:flex; align-items:flex-start; gap:8px; flex-wrap:wrap; }
+  #iconList { display:flex; gap:16px; align-items:flex-start; overflow-x:auto; padding:4px 0; }
+  .icon-wrap { display:flex; flex-direction:column; align-items:center; }
+  .icon-wrap img { width:var(--icon-size); height:var(--icon-size); object-fit:contain; border:2px solid transparent; border-radius:8px; background:#fff; cursor:pointer; }
+  .icon-wrap img.selected { border-color:#007bff; box-shadow:0 0 6px rgba(0,123,255,.6); }
+  .icon-desc { font-size:12px; color:#555; margin-top:4px; text-align:center; white-space:nowrap; }
+
+  /* レイアウト：地図＋サイドバー（スマホは下に移動） */
+  #main { display:flex; height:calc(100% - 66px); min-height:0; }
+  #map { flex:1 1 auto; min-height:0; }
+  #sidebar { width:360px; max-width:44vw; border-left:1px solid #eee; background:#fff; display:flex; flex-direction:column; }
+  #sidebarHeader { padding:10px 12px; border-bottom:1px solid #eee; font-weight:600; background:#fafafa; display:flex; align-items:center; justify-content:space-between; }
+  #listContainer { overflow:auto; padding:10px 10px 18px; }
+
+  /* 一覧アイテム */
+  .list-item { display:grid; grid-template-columns:auto 1fr; gap:10px; padding:10px; border:1px solid #eee; border-radius:12px; margin-bottom:10px; background:#fff; }
+  .list-thumb { width:var(--icon-size); height:var(--icon-size); border-radius:8px; overflow:hidden; background:#fff; display:flex; align-items:center; justify-content:center; border:1px solid #eee; position:relative; }
+  .list-thumb img { width:100%; height:100%; object-fit:contain; }
+  .badge { position:absolute; right:4px; top:4px; color:#fff; font-size:12px; padding:2px 6px; border-radius:999px; box-shadow:0 1px 4px rgba(0,0,0,.25); }
+
+  .list-body { display:flex; flex-direction:column; gap:8px; min-width:0; }
+  .stars-edit { display:inline-flex; gap:2px; user-select:none; }
+  .star { font-size:18px; cursor:pointer; color:#ccc; }
+  .star.filled { color:#f5a623; }
+
+  /* 説明欄を圧縮（右枠の圧迫を軽減） */
+  .desc-edit { width:100%; min-height:50px; max-height:150px; overflow:auto; resize:vertical; padding:8px 10px; border:1px solid #ddd; border-radius:10px; font-size:14px; line-height:1.3; }
+
+  /* 画像サムネ：大きめ（横並び） */
+  .thumb-row { display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:10px; }
+  .thumb-row img { width:100%; height:160px; object-fit:cover; border:1px solid #eee; border-radius:10px; cursor:pointer; }
+
+  /* マーカー（番号付き） */
+  .marker-wrap { position:relative; width:var(--icon-size); height:var(--icon-size); display:flex; align-items:flex-end; justify-content:center; }
+  .marker-wrap img { width:100%; height:100%; object-fit:contain; }
+  .marker-index { position:absolute; right:2px; top:2px; color:#fff; padding:1px 6px; border-radius:999px; font-size:12px; line-height:1; box-shadow:0 1px 4px rgba(0,0,0,.25); }
+
+  @media (max-width: 900px){
+    #main { flex-direction:column; }
+    #sidebar { width:100%; max-width:none; border-left:none; border-top:1px solid #eee; }
+  }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <div id="leftButtons">
+    <button id="addMarkerBtn">マーカー追加</button>
+    <button id="addRouteBtn">ルート追加</button>
+    <button id="undoBtn" disabled>Undo</button>
+    <button id="redoBtn" disabled>Redo</button>
+    <button id="resetBtn">リセット</button>
+  </div>
+  <div id="iconGroup">
+    <button id="addIconBtn">アイコン追加</button>
+    <input type="file" id="iconFileInput" accept="image/*" style="display:none" />
+    <div id="iconList" title="アイコンをクリックして選択"></div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="map"></div>
+  <aside id="sidebar">
+    <div id="sidebarHeader">
+      <span>マーカー一覧（直接編集）</span>
+      <span id="markerCount">0件</span>
+    </div>
+    <div id="listContainer"></div>
+  </aside>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+<script>
+/* ===== 地図初期化：滑らかズーム ===== */
+const map=L.map('map',{ zoomSnap:0.25, zoomDelta:0.25, wheelPxPerZoomLevel:120 }).setView([35.681236,139.767125],13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors'}).addTo(map);
+L.Control.geocoder({defaultMarkGeocode:false}).on('markgeocode', e=>map.setView(e.geocode.center,19)).addTo(map);
+
+/* ===== 参照 ===== */
+const addMarkerBtn=document.getElementById('addMarkerBtn');
+const addRouteBtn=document.getElementById('addRouteBtn');
+const undoBtn=document.getElementById('undoBtn');
+const redoBtn=document.getElementById('redoBtn');
+const resetBtn=document.getElementById('resetBtn');
+const addIconBtn=document.getElementById('addIconBtn');
+const iconFileInput=document.getElementById('iconFileInput');
+const iconList=document.getElementById('iconList');
+const listContainer=document.getElementById('listContainer');
+const markerCountEl=document.getElementById('markerCount');
+
+/* ===== 状態 ===== */
+let addMarkerMode=false, addRouteMode=false, selectedIconUrl=null;
+let markers=[]; // { marker, iconUrl, description, dangerLevel, imageDataUrl }
+let routeLines=[], currentRouteIndex=0;
+let undoStack=[], redoStack=[];
+const routeColors=['blue','red','green','orange','purple','brown'];
+
+/* ===== Utils ===== */
+function record(a){ undoStack.push(a); redoStack=[]; updateUndoRedo(); }
+function updateUndoRedo(){ undoBtn.disabled=!undoStack.length; redoBtn.disabled=!redoStack.length; }
+function escapeHtml(t){ const d=document.createElement('div'); d.textContent=t||''; return d.innerHTML; }
+function badgeColor(n){ n=Number(n)||0; if(n>=4) return '#E53935'; if(n===3) return '#FDD835'; if(n>=1) return '#43A047'; return '#757575'; }
+function starsHtml(n){ n=Number(n)||0; return [...Array(5)].map((_,i)=>`<span class="star ${i<n?'filled':''}" data-v="${i+1}">★</span>`).join(''); }
+
+/* ===== 初期アイコン（説明付き） ===== */
+const DEFAULT_ICON_FILES=[
+  {name:"スタート", file:"スタート.png", desc:"出発地点"},
+  {name:"ゴール",   file:"ゴール.png", desc:"到着地点"},
+  {name:"ポイント", file:"ポイント.png", desc:"目印・任意地点"},
+  {name:"つまずき注意", file:"pict つまずき.png", desc:"段差・障害物"},
+  {name:"車両注意",     file:"pict 車.png",     desc:"車が通る場所"},
+  {name:"雑踏注意",     file:"pict 雑踏.png",   desc:"人が多い場所"},
+  {name:"飛び出し注意", file:"pict 飛び出し.png", desc:"飛び出し危険"},
+  {name:"転落注意",     file:"pict 落下.png",   desc:"落ちる危険あり"},
+  {name:"転倒注意",     file:"pict 転倒.png",   desc:"滑りやすい場所"}
+];
+
+function addIconToList(url, desc){
+  const wrap=document.createElement('div'); wrap.className='icon-wrap';
+  const img=document.createElement('img'); img.src=url;
+  img.onclick=()=>{ document.querySelectorAll('#iconList img').forEach(i=>i.classList.remove('selected')); img.classList.add('selected'); selectedIconUrl=url; };
+  wrap.appendChild(img);
+  const label=document.createElement('div'); label.className='icon-desc'; label.textContent=desc||''; wrap.appendChild(label);
+  iconList.appendChild(wrap);
+  if(!selectedIconUrl){ img.classList.add('selected'); selectedIconUrl=url; }
+}
+
+async function loadDefaultIcons(){
+  for(const ic of DEFAULT_ICON_FILES){
+    addIconToList(encodeURI(ic.file), ic.desc);
+  }
+}
+
+addIconBtn.onclick=()=>iconFileInput.click();
+iconFileInput.onchange=()=>{
+  const f=iconFileInput.files[0]; if(!f) return;
+  const r=new FileReader(); r.onload=e=>{ addIconToList(e.target.result, " "); saveData(); };
+  r.readAsDataURL(f); iconFileInput.value='';
+};
+
+/* ===== 番号付きDivIcon（危険度で色変化） ===== */
+function createNumberedDivIcon(url, idx, danger){
+  const s=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--icon-size'));
+  const color=badgeColor(danger);
+  return L.divIcon({
+    html:`<div class="marker-wrap"><img src="${url}"><div class="marker-index" style="background:${color}">${idx}</div></div>`,
+    className:'', iconSize:[s,s], iconAnchor:[s/2,s], popupAnchor:[0,-s]
+  });
+}
+function renumberAll(){
+  markers.forEach((o,i)=>o.marker.setIcon(createNumberedDivIcon(o.iconUrl, i+1, o.dangerLevel)));
+  rebuildList();
+}
+
+/* ===== マーカー追加 ===== */
+addMarkerBtn.onclick=()=>{
+  addMarkerMode=!addMarkerMode;
+  if(addMarkerMode){ if(addRouteMode) stopRouteMode(); addMarkerBtn.classList.add('active'); addMarkerBtn.textContent='クリックで設置'; }
+  else { addMarkerBtn.classList.remove('active'); addMarkerBtn.textContent='マーカー追加'; }
+};
+map.on('click', e=>{ if(addMarkerMode) addMarker(e.latlng); else if(addRouteMode) addRoutePoint(e.latlng); });
+
+function addMarker(latlng){
+  const iconUrl=selectedIconUrl||encodeURI(DEFAULT_ICON_FILES[0].file);
+  const marker=L.marker(latlng, {icon:createNumberedDivIcon(iconUrl, markers.length+1, null)}).addTo(map);
+  const obj={ marker, iconUrl, description:'', dangerLevel:null, imageDataUrl:null };
+  markers.push(obj);
+  bindPopup(obj);
+  record({type:'markerAdd', obj});
+  renumberAll(); saveData();
+}
+
+/* ===== マーカーポップアップ（画像＋★＋説明） ===== */
+function bindPopup(o){
+  const html=`<div class="popup-form">
+    <label>説明文:</label><br>
+    <textarea rows="3" style="width:100%;height:90px;">${escapeHtml(o.description||'')}</textarea><br>
+    <label>危険度:</label><br><div class="stars-edit">${starsHtml(o.dangerLevel||0)}</div>
+    <label style="display:block;margin-top:6px;">画像:</label><input type="file" accept="image/*"><br>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <button class="save">保存</button>
+      <button class="del" style="background:#dc3545;color:#fff;">削除</button>
+    </div>
+  </div>`;
+  o.marker.bindPopup(html);
+  o.marker.on('popupopen', e=>{
+    const el=e.popup._contentNode;
+    const ta=el.querySelector('textarea');
+    const save=el.querySelector('.save');
+    const del=el.querySelector('.del');
+    const file=el.querySelector('input[type=file]');
+    const starBox=el.querySelector('.stars-edit');
+
+    starBox.addEventListener('click', ev=>{
+      if(ev.target.classList.contains('star')){
+        const v=Number(ev.target.dataset.v)||0;
+        o.dangerLevel=v; starBox.innerHTML=starsHtml(v);
+        renumberAll(); saveData();
+      }
+    });
+
+    file.onchange=()=>{
+      const f=file.files[0]; if(!f) return;
+      const r=new FileReader(); r.onload=ev=>{ o.imageDataUrl=ev.target.result; rebuildList(); saveData(); };
+      r.readAsDataURL(f);
+    };
+
+    save.onclick=()=>{ o.description=ta.value||''; o.marker.closePopup(); rebuildList(); saveData(); };
+    del.onclick=()=>{ map.removeLayer(o.marker); markers=markers.filter(m=>m!==o); record({type:'markerRemove', obj:o}); renumberAll(); saveData(); };
+  });
+}
+
+/* ===== 一覧（直接編集＋大きめサムネ） ===== */
+function rebuildList(){
+  listContainer.innerHTML=''; markerCountEl.textContent=`${markers.length}件`;
+  markers.forEach((o,i)=>{
+    const div=document.createElement('div'); div.className='list-item';
+
+    const thumb=document.createElement('div'); thumb.className='list-thumb';
+    const img=document.createElement('img'); img.src=o.iconUrl; thumb.appendChild(img);
+    const badge=document.createElement('span'); badge.className='badge'; badge.style.background=badgeColor(o.dangerLevel); badge.textContent=String(i+1); thumb.appendChild(badge);
+
+    const body=document.createElement('div'); body.className='list-body';
+
+    const starBox=document.createElement('div'); starBox.className='stars-edit'; starBox.innerHTML=starsHtml(o.dangerLevel||0);
+    starBox.addEventListener('click',ev=>{
+      if(ev.target.classList.contains('star')){
+        const v=Number(ev.target.dataset.v)||0; o.dangerLevel=v; starBox.innerHTML=starsHtml(v); renumberAll(); saveData();
+      }
+    });
+
+    const ta=document.createElement('textarea'); ta.className='desc-edit'; ta.placeholder='説明文を入力...'; ta.value=o.description||'';
+    ta.addEventListener('input',()=>{ o.description=ta.value; saveData(); });
+
+    const thumbs=document.createElement('div'); thumbs.className='thumb-row';
+    if(o.imageDataUrl){ const timg=document.createElement('img'); timg.src=o.imageDataUrl; timg.title='タップで拡大'; timg.onclick=()=>window.open(o.imageDataUrl,'_blank'); thumbs.appendChild(timg); }
+
+    body.appendChild(starBox);
+    body.appendChild(ta);
+    if(o.imageDataUrl) body.appendChild(thumbs);
+
+    div.addEventListener('click',ev=>{
+      const tag=ev.target.tagName.toLowerCase();
+      if(tag==='textarea' || ev.target.classList.contains('star') || tag==='img') return;
+      map.setView(o.marker.getLatLng(), Math.max(map.getZoom(), 17)); o.marker.openPopup();
+    });
+
+    div.appendChild(thumb);
+    div.appendChild(body);
+    listContainer.appendChild(div);
+  });
+}
+
+/* ===== ルート描画＋Undo/Redo ===== */
+let routeLine=null;
+addRouteBtn.onclick=()=>{ if(addRouteMode) stopRouteMode(); else { if(addMarkerMode){ addMarkerMode=false; addMarkerBtn.classList.remove('active'); addMarkerBtn.textContent='マーカー追加'; } startRouteMode(); } };
+function startRouteMode(){ addRouteMode=true; addRouteBtn.classList.add('active'); addRouteBtn.textContent='ルート追加モード ON'; routeLine=L.polyline([], {color:routeColors[currentRouteIndex%routeColors.length],weight:6}).addTo(map); routeLines.push(routeLine); }
+function stopRouteMode(){ addRouteMode=false; addRouteBtn.classList.remove('active'); addRouteBtn.textContent='ルート追加'; routeLine=null; currentRouteIndex++; saveData(); }
+function addRoutePoint(latlng){ if(!routeLine) startRouteMode(); routeLine.addLatLng(latlng); record({type:'routePointAdd', line:routeLine, latlng}); saveData(); }
+
+undoBtn.onclick=()=>{ const a=undoStack.pop(); if(!a) return;
+  if(a.type==='markerAdd'){ map.removeLayer(a.obj.marker); markers=markers.filter(m=>m!==a.obj); renumberAll(); }
+  else if(a.type==='markerRemove'){ if(!map.hasLayer(a.obj.marker)) a.obj.marker.addTo(map); markers.push(a.obj); bindPopup(a.obj); renumberAll(); }
+  else if(a.type==='routePointAdd'){ const pts=a.line.getLatLngs(); pts.pop(); a.line.setLatLngs(pts); }
+  redoStack.push(a); updateUndoRedo(); saveData();
+};
+redoBtn.onclick=()=>{ const a=redoStack.pop(); if(!a) return;
+  if(a.type==='markerAdd'){ if(!map.hasLayer(a.obj.marker)) a.obj.marker.addTo(map); markers.push(a.obj); bindPopup(a.obj); renumberAll(); }
+  else if(a.type==='markerRemove'){ map.removeLayer(a.obj.marker); markers=markers.filter(m=>m!==a.obj); renumberAll(); }
+  else if(a.type==='routePointAdd'){ const pts=a.line.getLatLngs(); pts.push(a.latlng); a.line.setLatLngs(pts); }
+  undoStack.push(a); updateUndoRedo(); saveData();
+};
+
+/* ===== 保存・復元・リセット ===== */
+function saveData(){
+  try{
+    localStorage.setItem('mapAppData', JSON.stringify({
+      markers: markers.map(o=>({ lat:o.marker.getLatLng().lat, lng:o.marker.getLatLng().lng, iconUrl:o.iconUrl, description:o.description||'', dangerLevel:(typeof o.dangerLevel==='number')?o.dangerLevel:null, imageDataUrl:o.imageDataUrl||null })),
+      routes: routeLines.map(l=>({ color:l.options.color, latlngs:l.getLatLngs().map(p=>({lat:p.lat,lng:p.lng})) })),
+      icons: Array.from(document.querySelectorAll('#iconList img')).map(i=>i.src)
+    }));
+  }catch(e){ console.error('保存失敗', e); }
+}
+
+async function loadData(){
+  try{
+    const raw=localStorage.getItem('mapAppData');
+    if(!raw){ await loadDefaultIcons(); return; }
+    const d=JSON.parse(raw);
+
+    // アイコン欄
+    if(Array.isArray(d.icons) && d.icons.length){
+      // 保存されているURLには説明テキストがないため、簡易ラベルを付与
+      d.icons.forEach(u=>addIconToList(u, "カスタム"));
+    } else {
+      await loadDefaultIcons();
+    }
+
+    // マーカー
+    if(Array.isArray(d.markers)){
+      for(const m of d.markers){
+        const o={ marker:L.marker([m.lat,m.lng],{icon:createNumberedDivIcon(m.iconUrl,1,m.dangerLevel)}).addTo(map),
+                  iconUrl:m.iconUrl, description:m.description||'', dangerLevel:(typeof m.dangerLevel==='number')?m.dangerLevel:null,
+                  imageDataUrl:m.imageDataUrl||null };
+        bindPopup(o); markers.push(o);
+      }
+      renumberAll();
+    }
+
+    // ルート
+    if(Array.isArray(d.routes)){
+      d.routes.forEach(r=>L.polyline(r.latlngs.map(ll=>[ll.lat,ll.lng]),{color:r.color,weight:6}).addTo(map));
+    }
+  }catch(e){
+    console.error('読み込み失敗', e);
+    await loadDefaultIcons();
+  }
+}
+
+resetBtn.onclick=()=>{ if(confirm('全データを削除して初期化しますか？')){ localStorage.clear(); location.reload(); } };
+
+/* ===== 起動 ===== */
+window.onload=()=>loadData();
+</script>
+</body>
+</html>
